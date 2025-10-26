@@ -24,7 +24,7 @@ This README documents the key issues I identified, how I fixed them, and why I m
       .then(d => setSubCategories(d.subCategories ?? []));
   }, [selectedCategory]);
   ```
-
+- **Why:** Prevents invalid combinations and shortens the list for better UX.
 ---
 
 ### 2. Image Load Error – “Invalid src prop on next/image”
