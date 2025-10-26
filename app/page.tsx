@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,51 +32,112 @@ interface Product {
   imageUrls: string[];
 }
 
+const LIMIT = 20;
+
 export default function Home() {
+  const router = useRouter();
+  const params = useSearchParams();
+
+
+  const [total, setTotal] = useState<number>(0);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [subCategories, setSubCategories] = useState<string[]>([]);
   const [search, setSearch] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState<string | undefined>(
-    undefined
-  );
-  const [selectedSubCategory, setSelectedSubCategory] = useState<
-    string | undefined
-  >(undefined);
+  const [selectedCategory, setSelectedCategory] = useState<string | undefined>(params.get("category") || undefined);
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string | undefined>(params.get("subCategory") || undefined);
   const [loading, setLoading] = useState(true);
+
+  const offset = Number(params.get("offset") ?? 0);
+
+  function pushQuery(next: Record<string, string | undefined>) {
+    const qs = new URLSearchParams(params.toString());
+    for (const [k, v] of Object.entries(next)) {
+      if (v !== undefined && v !== "") qs.set(k, v);
+      else qs.delete(k);
+    }
+    // reset paging when filters change
+    if ("search" in next || "category" in next || "subCategory" in next) qs.set("offset", "0");
+    // always keep limit
+    qs.set("limit", String(LIMIT));
+    router.push(`/?${qs.toString()}`, { scroll: false });
+  }
 
   useEffect(() => {
     fetch("/api/categories")
       .then((res) => res.json())
-      .then((data) => setCategories(data.categories));
+      .then((data) => setCategories(data.categories ?? []));
   }, []);
 
   useEffect(() => {
-    if (selectedCategory) {
-      fetch(`/api/subcategories`)
-        .then((res) => res.json())
-        .then((data) => setSubCategories(data.subCategories));
-    } else {
+    if (!selectedCategory) {
       setSubCategories([]);
       setSelectedSubCategory(undefined);
+      return;
     }
+    fetch(`/api/subcategories?category=${encodeURIComponent(selectedCategory)}`)
+      .then(r => r.json())
+      .then(d => setSubCategories(d.subCategories ?? []));
   }, [selectedCategory]);
+
+
+  useEffect(() => {
+    const id = setTimeout(() =>
+      pushQuery({ search }), 300);
+    return () => clearTimeout(id);
+  }, [search]); // eslint-disable-line
+
+  // Category change: set state, clear subcat, and push both in one go
+  function onCategoryChange(v: string | undefined) {
+    setSelectedCategory(v);
+    setSelectedSubCategory(undefined); // drop subcat when category changes
+    pushQuery({ category: v, subCategory: undefined });
+    if (!v) setSubCategories([]);     // instant UI clear
+  }
+
+  // Subcategory change: just set & push
+  function onSubCategoryChange(v: string | undefined) {
+    setSelectedSubCategory(v);
+    pushQuery({ subCategory: v });
+  }
+
+
+  // fetch products whenever URL params change
+  const productsUrl = useMemo(() => {
+    const qs = new URLSearchParams();
+    if (params.get("search")) qs.set("search", params.get("search")!);
+    if (params.get("category")) qs.set("category", params.get("category")!);
+    if (params.get("subCategory")) qs.set("subCategory", params.get("subCategory")!);
+    qs.set("limit", String(LIMIT));
+    qs.set("offset", String(offset));
+    return `/api/products?${qs.toString()}`;
+  }, [params, offset]);
 
   useEffect(() => {
     setLoading(true);
-    const params = new URLSearchParams();
-    if (search) params.append("search", search);
-    if (selectedCategory) params.append("category", selectedCategory);
-    if (selectedSubCategory) params.append("subCategory", selectedSubCategory);
-    params.append("limit", "20");
+    fetch(productsUrl)
+      .then(r => r.json())
+      .then(d => {
+        setProducts(d.products ?? []);
+        setTotal(d.total ?? 0);
+      })
+      .finally(() => setLoading(false));
+  }, [productsUrl]);
 
-    fetch(`/api/products?${params}`)
-      .then((res) => res.json())
-      .then((data) => {
-        setProducts(data.products);
-        setLoading(false);
-      });
-  }, [search, selectedCategory, selectedSubCategory]);
+
+  function nextPage() {
+    pushQuery({ offset: String(offset + LIMIT) });
+  }
+  function prevPage() {
+    pushQuery({ offset: String(Math.max(0, offset - LIMIT)) });
+  }
+
+  function clearAll() {
+    setSearch("");
+    setSelectedCategory("");
+    setSelectedSubCategory("");
+    router.push(`/?limit=${LIMIT}&offset=0`, { scroll: false });
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -96,7 +158,7 @@ export default function Home() {
 
             <Select
               value={selectedCategory}
-              onValueChange={(value) => setSelectedCategory(value || undefined)}
+              onValueChange={onCategoryChange}
             >
               <SelectTrigger className="w-full md:w-[200px]">
                 <SelectValue placeholder="All Categories" />
@@ -112,10 +174,9 @@ export default function Home() {
 
             {selectedCategory && subCategories.length > 0 && (
               <Select
+                key={selectedCategory}
                 value={selectedSubCategory}
-                onValueChange={(value) =>
-                  setSelectedSubCategory(value || undefined)
-                }
+                onValueChange={onSubCategoryChange}
               >
                 <SelectTrigger className="w-full md:w-[200px]">
                   <SelectValue placeholder="All Subcategories" />
@@ -133,11 +194,7 @@ export default function Home() {
             {(search || selectedCategory || selectedSubCategory) && (
               <Button
                 variant="outline"
-                onClick={() => {
-                  setSearch("");
-                  setSelectedCategory(undefined);
-                  setSelectedSubCategory(undefined);
-                }}
+                onClick={clearAll}
               >
                 Clear Filters
               </Button>
@@ -169,10 +226,10 @@ export default function Home() {
                     query: { product: JSON.stringify(product) },
                   }}
                 >
-                  <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
+                  <Card className="h-full flex flex-col hover:shadow-lg transition-shadow cursor-pointer">
                     <CardHeader className="p-0">
                       <div className="relative h-48 w-full overflow-hidden rounded-t-lg bg-muted">
-                        {product.imageUrls[0] && (
+                        {product.imageUrls?.[0] ? (
                           <Image
                             src={product.imageUrls[0]}
                             alt={product.title}
@@ -180,30 +237,37 @@ export default function Home() {
                             className="object-contain p-4"
                             sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
                           />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
+                            No image
+                          </div>
                         )}
                       </div>
                     </CardHeader>
-                    <CardContent className="pt-4">
+                    <CardContent className="pt-4 flex-1">
                       <CardTitle className="text-base line-clamp-2 mb-2">
                         {product.title}
                       </CardTitle>
                       <CardDescription className="flex gap-2 flex-wrap">
-                        <Badge variant="secondary">
-                          {product.categoryName}
-                        </Badge>
-                        <Badge variant="outline">
-                          {product.subCategoryName}
-                        </Badge>
+                        <Badge variant="secondary">{product.categoryName}</Badge>
+                        <Badge variant="outline">{product.subCategoryName}</Badge>
                       </CardDescription>
                     </CardContent>
-                    <CardFooter>
-                      <Button variant="outline" className="w-full">
-                        View Details
-                      </Button>
+                    <CardFooter className="mt-auto pt-0">
+                      <Button variant="outline" className="w-full">View Details</Button>
                     </CardFooter>
                   </Card>
+
                 </Link>
               ))}
+            </div>
+
+            <div className="flex items-center justify-center gap-3 mt-6">
+              <Button variant="outline" onClick={prevPage} disabled={offset <= 0}>Prev</Button>
+              <span className="text-sm text-muted-foreground">
+                Page {Math.floor(offset / LIMIT) + 1} / {Math.max(1, Math.ceil(total / LIMIT))}
+              </span>
+              <Button variant="outline" onClick={nextPage} disabled={offset + LIMIT >= total}>Next</Button>
             </div>
           </>
         )}
